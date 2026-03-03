@@ -414,18 +414,29 @@ func (c *Client) sendHeartbeatAck() {
 }
 
 // heartbeatLoop sends periodic heartbeat pings to keep the connection alive
+// and performs periodic GCM check-ins to ensure notification delivery.
+// Google stops delivering notifications to connections that haven't refreshed
+// their check-in, even if the TCP connection remains alive.
 func (c *Client) heartbeatLoop() {
-	// Send heartbeat every 4 minutes (FCM expects heartbeat within ~5 min)
-	ticker := time.NewTicker(4 * time.Minute)
-	defer ticker.Stop()
+	heartbeatTicker := time.NewTicker(4 * time.Minute)
+	checkInTicker := time.NewTicker(1 * time.Hour)
+	defer heartbeatTicker.Stop()
+	defer checkInTicker.Stop()
 
 	for {
 		select {
 		case <-c.closeChan:
 			c.debugLog("Heartbeat loop exiting (client closed)")
 			return
-		case <-ticker.C:
+		case <-heartbeatTicker.C:
 			c.sendHeartbeatPing()
+		case <-checkInTicker.C:
+			c.debugLog("Performing periodic GCM check-in to keep notification delivery active...")
+			if _, err := gcm.CheckIn(c.androidID, c.securityToken); err != nil {
+				c.debugLog("Periodic GCM check-in failed: %v", err)
+			} else {
+				c.debugLog("Periodic GCM check-in successful")
+			}
 		}
 	}
 }
