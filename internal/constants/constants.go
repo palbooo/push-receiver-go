@@ -51,3 +51,13 @@ const (
 	CheckinURL = "https://android.clients.google.com/checkin"
 )
 
+// MCS IqStanza extension IDs (see Google's MCS protocol)
+const (
+	// SelectiveAckExtensionID is the Extension.Id value for SelectiveAck — used
+	// inside an IqStanza to acknowledge received persistent messages so MCS
+	// stops redelivering them on reconnect.
+	SelectiveAckExtensionID int32 = 12
+	// StreamAckExtensionID is the Extension.Id value for StreamAck (currently unused).
+	StreamAckExtensionID int32 = 13
+)
+

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/palbooo/push-receiver-go/internal/constants"
 	"github.com/palbooo/push-receiver-go/internal/gcm"
 	"github.com/palbooo/push-receiver-go/internal/parser"
@@ -35,6 +36,11 @@ const (
 	EventHeartbeatPing EventType = "HEARTBEAT_PING"
 	// EventHeartbeatAck is emitted when we send a heartbeat ack
 	EventHeartbeatAck EventType = "HEARTBEAT_ACK"
+	// EventSelectiveAck is emitted when we send a SelectiveAck (IqStanza with
+	// Extension ID 12) acknowledging a received DataMessage by its persistentId.
+	// Without these ACKs, Google's MCS keeps redelivering the same messages on
+	// every reconnect and eventually resets the connection.
+	EventSelectiveAck EventType = "SELECTIVE_ACK"
 )
 
 // Event represents an event from the FCM client
@@ -347,6 +353,13 @@ func (c *Client) handleDataMessage(msg *pb.DataMessageStanza) {
 	c.persistentIDs = append(c.persistentIDs, persistentID)
 	c.mu.Unlock()
 
+	// Acknowledge the message to MCS so Google stops redelivering it on every
+	// reconnect. Done in a goroutine so the receive loop isn't blocked by a
+	// network write.
+	if persistentID != "" {
+		go c.sendSelectiveAck(persistentID)
+	}
+
 	// Convert app data to map
 	appData := make(map[string]string)
 	for _, data := range msg.AppData {
@@ -411,6 +424,63 @@ func (c *Client) sendHeartbeatAck() {
 	} else {
 		c.debugLog("Cannot send HeartbeatAck: connection is nil")
 	}
+}
+
+// sendSelectiveAck sends an IqStanza with a SelectiveAck extension (ID 12) to
+// acknowledge a received DataMessage by its persistentId. This tells Google's
+// MCS that the message was delivered, so it stops re-sending it on reconnect.
+// Wire format mirrors sendHeartbeatAck: tag byte + varint length + protobuf payload.
+func (c *Client) sendSelectiveAck(persistentID string) {
+	// Inner payload: SelectiveAck { id: [persistentID] }
+	selAck := &pb.SelectiveAck{Id: []string{persistentID}}
+	selAckBytes, err := proto.Marshal(selAck)
+	if err != nil {
+		c.debugLog("Failed to marshal SelectiveAck: %v", err)
+		return
+	}
+
+	// Wrap in Extension { id: 12, data: <SelectiveAck bytes> }
+	ext := &pb.Extension{
+		Id:   proto.Int32(constants.SelectiveAckExtensionID),
+		Data: selAckBytes,
+	}
+
+	// Wrap in IqStanza { type: SET, id: <uuid>, extension: <ext> }
+	iqType := pb.IqStanza_SET
+	iq := &pb.IqStanza{
+		Type:      &iqType,
+		Id:        proto.String(uuid.New().String()),
+		Extension: ext,
+	}
+	iqBytes, err := proto.Marshal(iq)
+	if err != nil {
+		c.debugLog("Failed to marshal IqStanza: %v", err)
+		return
+	}
+
+	// Build wire frame: IqStanzaTag + varint length + payload
+	var buf bytes.Buffer
+	buf.WriteByte(constants.IqStanzaTag)
+	buf.Write(parser.EncodeVarint(uint32(len(iqBytes))))
+	buf.Write(iqBytes)
+
+	c.mu.RLock()
+	conn := c.conn
+	c.mu.RUnlock()
+
+	if conn == nil {
+		c.debugLog("Cannot send SelectiveAck: connection is nil")
+		return
+	}
+
+	n, err := conn.Write(buf.Bytes())
+	if err != nil {
+		c.debugLog("Failed to send SelectiveAck for %s: %v", persistentID, err)
+		c.sendEvent(Event{Type: EventError, Data: fmt.Errorf("failed to send selective ack: %w", err)})
+		return
+	}
+	c.debugLog("Sent SelectiveAck for %s (%d bytes)", persistentID, n)
+	c.sendEvent(Event{Type: EventSelectiveAck, Data: persistentID})
 }
 
 // heartbeatLoop sends periodic heartbeat pings to keep the connection alive
