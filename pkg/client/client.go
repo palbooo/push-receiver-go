@@ -34,7 +34,9 @@ const (
 	EventError EventType = "ERROR"
 	// EventHeartbeatPing is emitted when a heartbeat ping is received from the server
 	EventHeartbeatPing EventType = "HEARTBEAT_PING"
-	// EventHeartbeatAck is emitted when we send a heartbeat ack
+	// EventHeartbeatAck is emitted when we send a heartbeat ack in response to
+	// a server ping, and when the server acks one of our pings. Either way it
+	// signals that the connection is alive.
 	EventHeartbeatAck EventType = "HEARTBEAT_ACK"
 	// EventSelectiveAck is emitted when we send a SelectiveAck (IqStanza with
 	// Extension ID 12) acknowledging a received DataMessage by its persistentId.
@@ -161,6 +163,16 @@ func (c *Client) Close() error {
 func (c *Client) connect() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if c.closed {
+		return fmt.Errorf("client is closed")
+	}
+
+	// Close any previous connection so reconnects don't leak sockets
+	if c.conn != nil {
+		c.conn.Close()
+		c.conn = nil
+	}
 
 	// Create TLS connection with timeout
 	config := &tls.Config{
@@ -318,7 +330,12 @@ func (c *Client) handleMessage(msg *parser.Message) {
 		c.sendHeartbeatAck()
 
 	case constants.HeartbeatAckTag:
-		c.debugLog("Received HeartbeatAck from server (unexpected)")
+		// Server acknowledged one of our HeartbeatPings. Emit it so consumers
+		// get a periodic liveness signal even when no notifications arrive —
+		// without this, a healthy idle connection is indistinguishable from a
+		// dead one at the event-channel level.
+		c.debugLog("Received HeartbeatAck from server")
+		c.sendEvent(Event{Type: EventHeartbeatAck, Data: time.Now()})
 
 	case constants.CloseTag:
 		c.debugLog("Received Close message from server")
@@ -504,6 +521,10 @@ func (c *Client) heartbeatLoop() {
 			c.debugLog("Performing periodic GCM check-in to keep notification delivery active...")
 			if _, err := gcm.CheckIn(c.androidID, c.securityToken); err != nil {
 				c.debugLog("Periodic GCM check-in failed: %v", err)
+				// Surface this: Google stops delivering notifications to
+				// connections without a fresh check-in, even though the TCP
+				// connection stays healthy.
+				c.sendEvent(Event{Type: EventError, Data: fmt.Errorf("periodic GCM check-in failed: %w", err)})
 			} else {
 				c.debugLog("Periodic GCM check-in successful")
 			}
@@ -550,24 +571,34 @@ func (c *Client) sendEvent(event Event) {
 	}
 }
 
-// retry attempts to reconnect to FCM with exponential backoff
+// retry attempts to reconnect to FCM with exponential backoff.
+// The mutex must NOT be held across the sleep or the connect() call:
+// connect() takes the same non-reentrant lock, and holding it while
+// sleeping starves every other lock user (heartbeats, Close).
 func (c *Client) retry() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	if c.closed {
+		c.mu.Unlock()
 		c.debugLog("Client is closed, not retrying")
 		return
 	}
-
 	c.retryCount++
-	timeout := c.retryCount
+	attempt := c.retryCount
+	c.mu.Unlock()
+
+	timeout := attempt
 	if timeout > c.maxRetryTimeout {
 		timeout = c.maxRetryTimeout
 	}
 
-	c.debugLog("Retrying connection in %d seconds (attempt %d)...", timeout, c.retryCount)
-	time.Sleep(time.Duration(timeout) * time.Second)
+	c.debugLog("Retrying connection in %d seconds (attempt %d)...", timeout, attempt)
+
+	select {
+	case <-time.After(time.Duration(timeout) * time.Second):
+	case <-c.closeChan:
+		c.debugLog("Client closed during retry backoff, not retrying")
+		return
+	}
 
 	// Attempt to reconnect
 	if err := c.connect(); err == nil {
@@ -575,6 +606,7 @@ func (c *Client) retry() {
 		go c.listen()
 	} else {
 		c.debugLog("Reconnection failed: %v", err)
+		c.sendEvent(Event{Type: EventError, Data: fmt.Errorf("reconnect attempt %d failed: %w", attempt, err)})
 		go c.retry()
 	}
 }
