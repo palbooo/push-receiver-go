@@ -15,9 +15,18 @@ type Config struct {
 	FCM              FCMConfig
 	RustPlusAPIURL   string
 	ExpoPushTokenURL string
+
+	// DeviceID identifies this application to the Rust Companion API.
+	// Facepunch stores exactly one push token per (steamId, deviceId): two
+	// applications registering with the same DeviceID overwrite each other's
+	// registration, and the loser silently stops receiving notifications.
+	// There is deliberately no default — pick a value unique to your
+	// application (e.g. "my-bot.example.com").
+	DeviceID string
 }
 
-// DefaultConfig returns the default configuration for Rust+ Companion
+// DefaultConfig returns the default configuration for Rust+ Companion.
+// DeviceID is left empty and must be set before calling RegisterRustPlus.
 func DefaultConfig() *Config {
 	return &Config{
 		FCM: FCMConfig{

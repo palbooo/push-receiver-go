@@ -22,15 +22,20 @@ func main() {
 
 	fmt.Println("=== Rust+ FCM Registration ===\n")
 
+	// The device ID must be unique to your application — Facepunch keeps one
+	// push token per (steamId, deviceId), so a shared ID overwrites other
+	// registrations.
+	deviceID := "push-receiver-go-example"
+
 	// Option 1: Register with JWT (extracts Steam ID automatically)
-	result, err := register.RegisterWithJWT(authToken)
+	result, err := register.RegisterWithJWT(authToken, deviceID)
 	if err != nil {
 		log.Fatalf("Registration failed: %v", err)
 	}
 
 	// Option 2: If you already have the Steam ID
 	// steamID := "76561198880712723"
-	// result, err := register.Register(steamID, authToken)
+	// result, err := register.Register(steamID, authToken, deviceID)
 
 	fmt.Println("\n=== Registration Successful ===")
 	fmt.Printf("Steam ID: %s\n", result.SteamID)

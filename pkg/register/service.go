@@ -31,17 +31,21 @@ func NewService(config *Config) *Service {
 // Register is a convenience function that performs the complete FCM registration flow
 // using the default configuration. This is the simplest way to use the package.
 //
+// deviceID must be unique to your application — see Config.DeviceID.
+//
 // For custom configuration, create a Service with NewService() instead.
 //
 // Example:
 //
-//	result, err := register.Register(steamID, authToken)
+//	result, err := register.Register(steamID, authToken, "my-bot.example.com")
 //	if err != nil {
 //	    log.Fatal(err)
 //	}
 //	fmt.Printf("FCM Token: %s\n", result.FCMCredentials.FCM.Token)
-func Register(steamID, authToken string) (*RegistrationResult, error) {
-	service := NewService(nil)
+func Register(steamID, authToken, deviceID string) (*RegistrationResult, error) {
+	config := DefaultConfig()
+	config.DeviceID = deviceID
+	service := NewService(config)
 	return service.Register(steamID, authToken)
 }
 
@@ -49,20 +53,22 @@ func Register(steamID, authToken string) (*RegistrationResult, error) {
 // and performs the complete FCM registration flow using default configuration.
 // This is the absolute simplest way to use the package - just pass the auth token.
 //
+// deviceID must be unique to your application — see Config.DeviceID.
+//
 // Example:
 //
 //	authToken := "eyJzdGVhbUlkIjoiNzY1NjExOTg4ODA3MTI3MjMi..."
-//	result, err := register.RegisterWithJWT(authToken)
+//	result, err := register.RegisterWithJWT(authToken, "my-bot.example.com")
 //	if err != nil {
 //	    log.Fatal(err)
 //	}
 //	fmt.Printf("Steam ID: %s\n", result.SteamID)
-func RegisterWithJWT(authToken string) (*RegistrationResult, error) {
+func RegisterWithJWT(authToken, deviceID string) (*RegistrationResult, error) {
 	steamID, err := ExtractSteamIDFromJWT(authToken)
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract steam ID: %w", err)
 	}
-	return Register(steamID, authToken)
+	return Register(steamID, authToken, deviceID)
 }
 
 // ExpoPushToken exchanges an FCM token for an Expo push token
@@ -108,6 +114,10 @@ func (s *Service) ExpoPushToken(fcmToken string) (string, error) {
 // RegisterRustPlus registers the device with the Rust Companion API
 // Returns the updated authToken from the API response
 func (s *Service) RegisterRustPlus(authToken, expoPushToken string) (string, error) {
+	if s.config.DeviceID == "" {
+		return "", fmt.Errorf("register: Config.DeviceID is empty; set it to a value unique to your application (Facepunch keeps one push token per steamId+deviceId, so a shared ID overwrites other registrations)")
+	}
+
 	// Decode URL-encoded token before sending
 	decodedToken, err := url.QueryUnescape(authToken)
 	if err != nil {
@@ -118,7 +128,7 @@ func (s *Service) RegisterRustPlus(authToken, expoPushToken string) (string, err
 
 	requestBody := RustPlusRequest{
 		AuthToken: decodedToken,
-		DeviceID:  "rustplus.app",
+		DeviceID:  s.config.DeviceID,
 		PushKind:  3,
 		PushToken: expoPushToken,
 	}

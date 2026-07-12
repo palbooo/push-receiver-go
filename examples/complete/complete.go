@@ -26,8 +26,11 @@ func main() {
 	fmt.Println("=== Starting Rust+ FCM Registration ===\n")
 
 	// Step 1: Register with FCM and Rust+ API
+	// The device ID must be unique to your application — Facepunch keeps one
+	// push token per (steamId, deviceId), so a shared ID overwrites other
+	// registrations.
 	fmt.Println("Registering with FCM and Rust+ API...")
-	result, err := register.RegisterWithJWT(authToken)
+	result, err := register.RegisterWithJWT(authToken, "push-receiver-go-example")
 	if err != nil {
 		log.Fatalf("Registration failed: %v", err)
 	}
